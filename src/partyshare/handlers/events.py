@@ -662,8 +662,10 @@ async def cmd_remove(message: Message) -> None:
     await message.answer("Участник удалён")
 
 
-@events_router.message(Command("invitelink"))
-async def cmd_invitelink(message: Message) -> None:
+## Дублирующийся блок /invitelink удалён ниже
+## Дублирующийся блок /join удалён ниже
+## Дублирующийся блок callback invite: удалён ниже
+## Дублирующийся блок callback cycle_status: удалён ниже
     repo = get_repo()
     parts = message.text.split()
     if len(parts) < 2:

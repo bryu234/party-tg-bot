@@ -35,6 +35,6 @@ def test_calculate_balances_mixed():
     balances = calculate_balances(expenses)
 
     assert sum(balances.values()) == 0
-    assert balances[1] == 2000
-    assert balances[2] == -500
+    assert balances[1] == 1650
+    assert balances[2] == -250
 

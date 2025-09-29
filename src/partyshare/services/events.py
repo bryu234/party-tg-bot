@@ -44,7 +44,7 @@ def format_event_card(card: EventCardData, tz: ZoneInfo) -> str:
     if card.notes:
         lines.append(f"Заметки: {card.notes}")
     if card.remind_at:
-        lines.append(f"Напоминание: {card.remind_at.astimezone(tz).strftime('%d.%m.%Y %H:%М %Z')}")
+        lines.append(f"Напоминание: {card.remind_at.astimezone(tz).strftime('%d.%m.%Y %H:%M %Z')}")
     if card.status:
         lines.append(f"Статус: {STATUS_LABELS.get(card.status, card.status.value)}")
     return "\n".join(lines)
