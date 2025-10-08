@@ -21,7 +21,7 @@ services:
       db:
         condition: service_healthy
     env_file: .env
-    command: bash -c "alembic upgrade head && python -m partyshare.bot"
+    command: python -m partyshare.bot
     volumes:
       - .:/app
 

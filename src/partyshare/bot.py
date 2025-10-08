@@ -11,6 +11,8 @@ from partyshare.handlers import basic_router, events_router, expenses_router
 from partyshare.state import state
 from partyshare.logging import configure_logging, get_logger
 from partyshare.scheduler import setup_scheduler
+from alembic.config import Config
+from alembic import command as alembic_command
 
 
 async def main() -> None:
@@ -27,6 +29,10 @@ async def main() -> None:
     dp.include_router(expenses_router)
 
     set_global_repository(repo)
+
+    # Применяем миграции при старте бота
+    alembic_cfg = Config("alembic.ini")
+    alembic_command.upgrade(alembic_cfg, "head")
 
     scheduler = await setup_scheduler(bot, repo)
 

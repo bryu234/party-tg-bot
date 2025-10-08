@@ -34,7 +34,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = create_engine(_sync_database_url(), poolclass=pool.NullPool)
+    url = _sync_database_url()
+    print(f"[alembic] using url: {url}")
+    connectable = create_engine(url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(connection=connection, render_as_batch=True)

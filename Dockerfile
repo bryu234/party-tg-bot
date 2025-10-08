@@ -10,13 +10,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
-COPY src ./src
+COPY . .
 
 RUN pip install --upgrade pip \
     && pip install .[dev]
-
-COPY . .
 
 CMD ["python", "-m", "partyshare.bot"]
 
