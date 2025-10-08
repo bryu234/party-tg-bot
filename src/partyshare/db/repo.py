@@ -15,7 +15,9 @@ class Database:
 
     async def connect(self) -> None:
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(self._dsn)
+            # asyncpg ожидает схему postgresql/postgres, без "+asyncpg"
+            dsn = self._dsn.replace("+asyncpg", "")
+            self._pool = await asyncpg.create_pool(dsn)
             self._log.info("db.pool.created")
 
     async def close(self) -> None:
