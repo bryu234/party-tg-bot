@@ -522,8 +522,7 @@ async def cmd_invitelink(message: Message) -> None:
         expires_at = datetime.now(timezone.utc) + timedelta(hours=ttl_hours)
 
     link = await repo.add_invite_link(event_id, token, max_uses, expires_at)
-    await message.answer(f"Пригласительная ссылка:
-/join {link['token']}")
+    await message.answer(f"Пригласительная ссылка:\n/join {link['token']}")
 
 
 @events_router.message(Command("join"))
