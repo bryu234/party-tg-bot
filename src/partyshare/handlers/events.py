@@ -956,12 +956,22 @@ async def cb_summary(callback: CallbackQuery) -> None:
 
 async def handle_create_event_input(message: Message, repo, user) -> None:
     """Обработка пошагового ввода данных для создания события"""
+    from partyshare.logging import get_logger
+    log = get_logger(__name__)
+    
     if not message.text:
         await message.answer("❌ Отправь текст")
         return
     
     step = state.get_event_step(user.id)
     text = message.text.strip()
+    
+    log.info(f"handle_create_event_input", user_id=user.id, step=step, text=text[:50])
+    
+    # Если шаг не установлен, значит это первое сообщение (название)
+    if step is None:
+        step = "title"
+        state.set_event_step(user.id, "title")
     
     # Шаг 1: Название
     if step == "title":
@@ -1096,6 +1106,15 @@ async def handle_text_input(message: Message) -> None:
         return
     
     repo = get_repo()
+    
+    # DEBUG: Логирование
+    from partyshare.logging import get_logger
+    log = get_logger(__name__)
+    log.info(f"handle_text_input", 
+             user_id=user.id, 
+             text=message.text[:50] if message.text else None,
+             is_creating=state.is_creating_event(user.id),
+             step=state.get_event_step(user.id))
     
     # Проверяем, создаёт ли пользователь событие
     if state.is_creating_event(user.id):
