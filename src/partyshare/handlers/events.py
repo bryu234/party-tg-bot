@@ -69,7 +69,8 @@ async def cb_menu_myevents(callback: CallbackQuery) -> None:
             reply_markup=keyboard
         )
     else:
-        cards = await build_event_cards(repo, events, user_id)
+        settings = get_settings()
+        cards = build_event_cards(events, settings.zoneinfo, is_owner=True)
         keyboard = build_events_keyboard(
             events,
             cards,
