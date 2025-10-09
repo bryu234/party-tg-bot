@@ -6,7 +6,7 @@ from typing import Optional
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
 
 from partyshare.config import get_settings
 from partyshare.db.repo import get_global_repository
@@ -21,7 +21,7 @@ from partyshare.services.events import (
 from partyshare.services.split import ExpenseItemShare, ExpenseShare, calculate_balances
 from partyshare.services.settlement import settle
 from partyshare.state import OWNER_VIEW, PARTICIPANT_VIEW, state
-from partyshare.utils.parse import parse_event_datetime
+from partyshare.utils.parse import parse_event_datetime, parse_russian_date
 from partyshare.db.models import ParticipantStatus
 
 events_router = Router()
@@ -29,6 +29,172 @@ events_router = Router()
 
 def get_repo():
     return get_global_repository()
+
+
+@events_router.callback_query(lambda c: c.data == "menu:myevents")
+async def cb_menu_myevents(callback: CallbackQuery) -> None:
+    """Показать список событий из главного меню"""
+    repo = get_repo()
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка: пользователь не найден")
+        return
+
+    # Получаем события пользователя (где он владелец или участник)
+    user_id = await repo.ensure_user(user.id, user.username, user.full_name)
+    owner_events = await repo.list_owner_events(user_id)
+    participant_events = await repo.list_participant_events(user_id)
+    
+    # Объединяем списки и убираем дубликаты
+    event_ids_seen = set()
+    events = []
+    for event in owner_events:
+        if event['id'] not in event_ids_seen:
+            events.append(event)
+            event_ids_seen.add(event['id'])
+    for event in participant_events:
+        if event['id'] not in event_ids_seen:
+            events.append(event)
+            event_ids_seen.add(event['id'])
+
+    if not events:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Создать событие", callback_data="menu:newevent")],
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+        ])
+        await callback.message.edit_text(
+            "📅 <b>Мои события</b>\n\n"
+            "У тебя пока нет событий.\n"
+            "Создай первое или присоединись к существующему!",
+            reply_markup=keyboard
+        )
+    else:
+        cards = await build_event_cards(repo, events, user_id)
+        keyboard = build_events_keyboard(
+            events,
+            cards,
+            is_owner_view=True,
+            page_size=5,
+            page=0
+        )
+        
+        # Добавляем кнопку возврата в меню
+        keyboard.inline_keyboard.append(
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+        )
+        
+        await callback.message.edit_text(
+            "📅 <b>Мои события</b>\n\n"
+            "Выбери событие для управления:",
+            reply_markup=keyboard
+        )
+    
+    await callback.answer()
+
+
+@events_router.callback_query(lambda c: c.data == "menu:newevent")
+async def cb_menu_newevent(callback: CallbackQuery) -> None:
+    """Начало создания события - запрос названия"""
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+    
+    # Устанавливаем состояние "создание события" и шаг "название"
+    state.set_creating_event(user.id)
+    state.set_event_step(user.id, "title")
+    state.clear_event_data(user.id)
+    
+    text = (
+        "➕ <b>Создание нового события</b>\n\n"
+        "📝 <b>Шаг 1/4: Название</b>\n\n"
+        "Как назовём событие?\n\n"
+        "Например: <i>День рождения Макса</i> или <i>Корпоратив</i>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="menu:cancel_create")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@events_router.callback_query(lambda c: c.data == "menu:cancel_create")
+async def cb_cancel_create(callback: CallbackQuery) -> None:
+    """Отмена создания события"""
+    user = callback.from_user
+    if user:
+        state.clear_creating_event(user.id)
+        state.clear_event_data(user.id)
+    
+    # Возвращаемся в главное меню
+    user_name = callback.from_user.first_name if callback.from_user else "друг"
+    from partyshare.handlers.basic import get_main_menu_keyboard
+    await callback.message.edit_text(
+        f"👋 Привет, {user_name}!\n\n"
+        "Я <b>PartyShare</b> — помогу собрать друзей и честно поделить расходы.\n\n"
+        "Выбери действие:",
+        reply_markup=get_main_menu_keyboard()
+    )
+    await callback.answer("Отменено")
+
+
+@events_router.callback_query(lambda c: c.data == "event:skip_location")
+async def cb_skip_location(callback: CallbackQuery) -> None:
+    """Пропуск указания места"""
+    user = callback.from_user
+    if not user:
+        return
+    
+    state.set_event_step(user.id, "notes")
+    
+    await callback.message.edit_text(
+        "✅ Место пропущено!\n\n"
+        "📋 <b>Шаг 4/4: Заметки</b>\n\n"
+        "Есть дополнительная информация?\n\n"
+        "Например: <i>Приносите подарки!</i> или <i>Дресс-код: casual</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏩ Пропустить", callback_data="event:skip_notes")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="menu:cancel_create")]
+        ])
+    )
+    await callback.answer()
+
+
+@events_router.callback_query(lambda c: c.data == "event:skip_notes")
+async def cb_skip_notes(callback: CallbackQuery) -> None:
+    """Пропуск заметок и создание события"""
+    user = callback.from_user
+    if not user or not callback.message:
+        return
+    
+    repo = get_repo()
+    await create_event_from_data(callback.message, repo, user)
+    await callback.answer("Событие создано!")
+
+
+@events_router.callback_query(lambda c: c.data == "menu:addexpense")
+async def cb_menu_addexpense(callback: CallbackQuery) -> None:
+    """Инструкция по добавлению расхода"""
+    text = (
+        "💰 <b>Добавление расхода</b>\n\n"
+        "Чтобы добавить расход, отправь команду в формате:\n\n"
+        "<code>/addexpense [event_id] | [название] | [сумма валюта] | shared/items</code>\n\n"
+        "<b>Пример:</b>\n"
+        "<code>/addexpense 1 | Пицца | 2500 RUB | shared</code>\n\n"
+        "<b>Параметры:</b>\n"
+        "• event_id - ID события (найди в списке событий)\n"
+        "• название - что купили\n"
+        "• сумма - число и валюта (RUB, EUR, USD)\n"
+        "• shared - делить поровну\n"
+        "• items - делить по позициям\n\n"
+        "Сначала посмотри свои события:"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Мои события", callback_data="menu:myevents")],
+        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
 
 
 def format_event_details(event, participants) -> str:
@@ -173,7 +339,7 @@ async def cmd_newevent(message: Message) -> None:
     repo = get_repo()
     parts = message.text.split("|", maxsplit=3) if message.text else []
     if len(parts) < 2:
-        await message.answer("Использование: /newevent <title> | <YYYY-MM-DD HH:MM TZ> | <location?> | <notes?>")
+        await message.answer("Использование: /newevent [название] | [YYYY-MM-DD HH:MM TZ] | [место?] | [заметки?]")
         return
 
     title = parts[0].replace("/newevent", "").strip()
@@ -225,7 +391,7 @@ async def cmd_status(message: Message) -> None:
         return
     parts = message.text.split()
     if len(parts) != 3:
-        await message.answer("Использование: /status <event_id> going|declined|maybe")
+        await message.answer("Использование: /status [event_id] going|declined|maybe")
         return
 
     try:
@@ -255,7 +421,7 @@ async def cmd_invite(message: Message) -> None:
         return
     parts = message.text.split()
     if len(parts) != 3:
-        await message.answer("Использование: /invite <event_id> @username")
+        await message.answer("Использование: /invite [event_id] @username")
         return
 
     event_id = int(parts[1])
@@ -283,7 +449,7 @@ async def cmd_summary(message: Message) -> None:
         return
     parts = message.text.split()
     if len(parts) != 2:
-        await message.answer("Использование: /summary <event_id>")
+        await message.answer("Использование: /summary [event_id]")
         return
 
     event_id = int(parts[1])
@@ -306,7 +472,7 @@ async def cmd_settle(message: Message) -> None:
         return
     parts = message.text.split()
     if len(parts) != 2:
-        await message.answer("Использование: /settle <event_id>")
+        await message.answer("Использование: /settle [event_id]")
         return
 
     event_id = int(parts[1])
@@ -355,7 +521,7 @@ async def cmd_manage(message: Message) -> None:
         return
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Использование: /manage <event_id>")
+        await message.answer("Использование: /manage [event_id]")
         return
 
     try:
@@ -492,7 +658,7 @@ async def cmd_invitelink(message: Message) -> None:
     repo = get_repo()
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Использование: /invitelink <event_id> [--max=N] [--ttl=hours]")
+        await message.answer("Использование: /invitelink [event_id] [--max=N] [--ttl=hours]")
         return
 
     try:
@@ -530,7 +696,7 @@ async def cmd_join(message: Message) -> None:
     repo = get_repo()
     parts = message.text.split()
     if len(parts) != 2:
-        await message.answer("Использование: /join <token>")
+        await message.answer("Использование: /join [token]")
         return
 
     token = parts[1]
@@ -604,7 +770,7 @@ async def cmd_transfer_ownership(message: Message) -> None:
         return
     parts = message.text.split()
     if len(parts) != 3:
-        await message.answer("Использование: /transfer_ownership <event_id> @username")
+        await message.answer("Использование: /transfer_ownership [event_id] @username")
         return
 
     try:
@@ -635,7 +801,7 @@ async def cmd_remove(message: Message) -> None:
     repo = get_repo()
     parts = message.text.split()
     if len(parts) != 3:
-        await message.answer("Использование: /remove <event_id> @username")
+        await message.answer("Использование: /remove [event_id] @username")
         return
 
     try:
@@ -668,7 +834,7 @@ async def cmd_remove(message: Message) -> None:
     repo = get_repo()
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Использование: /invitelink <event_id> [--max=N] [--ttl=hours]")
+        await message.answer("Использование: /invitelink [event_id] [--max=N] [--ttl=hours]")
         return
 
     try:
@@ -698,8 +864,7 @@ async def cmd_remove(message: Message) -> None:
         expires_at = datetime.now(timezone.utc) + timedelta(hours=ttl_hours)
 
     link = await repo.add_invite_link(event_id, token, max_uses, expires_at)
-    await message.answer(f"Пригласительная ссылка:
-/join {link['token']}")
+    await message.answer(f"Пригласительная ссылка: /join {link['token']}")
 
 
 @events_router.message(Command("join"))
@@ -707,7 +872,7 @@ async def cmd_join(message: Message) -> None:
     repo = get_repo()
     parts = message.text.split()
     if len(parts) != 2:
-        await message.answer("Использование: /join <token>")
+        await message.answer("Использование: /join [token]")
         return
 
     token = parts[1]
@@ -789,18 +954,160 @@ async def cb_summary(callback: CallbackQuery) -> None:
     await callback.message.answer(summary_message)
 
 
-@events_router.message()
-async def handle_pending_edit(message: Message) -> None:
+async def handle_create_event_input(message: Message, repo, user) -> None:
+    """Обработка пошагового ввода данных для создания события"""
+    if not message.text:
+        await message.answer("❌ Отправь текст")
+        return
+    
+    step = state.get_event_step(user.id)
+    text = message.text.strip()
+    
+    # Шаг 1: Название
+    if step == "title":
+        state.set_event_data(user.id, "title", text)
+        state.set_event_step(user.id, "datetime")
+        
+        await message.answer(
+            "✅ Отлично!\n\n"
+            "📅 <b>Шаг 2/4: Дата и время</b>\n\n"
+            "Когда пройдёт событие?\n\n"
+            "<b>Примеры:</b>\n"
+            "• <code>20 декабря 2025 19:00</code>\n"
+            "• <code>20.12.2025 19:00</code>\n"
+            "• <code>31/12/2025 23:59</code>\n\n"
+            "Таймзона: <b>Москва (+3)</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отменить", callback_data="menu:cancel_create")]
+            ])
+        )
+        return
+    
+    # Шаг 2: Дата и время
+    elif step == "datetime":
+        try:
+            dt = parse_russian_date(text)
+            state.set_event_data(user.id, "datetime", dt.isoformat())
+            state.set_event_step(user.id, "location")
+            
+            await message.answer(
+                "✅ Дата сохранена!\n\n"
+                "📍 <b>Шаг 3/4: Место</b>\n\n"
+                "Где пройдёт событие?\n\n"
+                "Например: <i>Кафе Пушкин</i> или <i>Офис на Тверской</i>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⏩ Пропустить", callback_data="event:skip_location")],
+                    [InlineKeyboardButton(text="❌ Отменить", callback_data="menu:cancel_create")]
+                ])
+            )
+        except ValueError as e:
+            await message.answer(
+                "❌ Не могу распознать дату!\n\n"
+                "<b>Используй один из форматов:</b>\n"
+                "• 20 декабря 2025 19:00\n"
+                "• 20.12.2025 19:00\n"
+                "• 31/12/2025 23:59\n\n"
+                "Попробуй ещё раз:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Отменить", callback_data="menu:cancel_create")]
+                ])
+            )
+        return
+    
+    # Шаг 3: Место
+    elif step == "location":
+        state.set_event_data(user.id, "location", text)
+        state.set_event_step(user.id, "notes")
+        
+        await message.answer(
+            "✅ Место сохранено!\n\n"
+            "📋 <b>Шаг 4/4: Заметки</b>\n\n"
+            "Есть дополнительная информация?\n\n"
+            "Например: <i>Приносите подарки!</i> или <i>Дресс-код: casual</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⏩ Пропустить", callback_data="event:skip_notes")],
+                [InlineKeyboardButton(text="❌ Отменить", callback_data="menu:cancel_create")]
+            ])
+        )
+        return
+    
+    # Шаг 4: Заметки - создаём событие
+    elif step == "notes":
+        state.set_event_data(user.id, "notes", text)
+        await create_event_from_data(message, repo, user)
+        return
+
+
+async def create_event_from_data(message: Message, repo, user) -> None:
+    """Создание события из собранных данных"""
+    data = state.get_event_data(user.id)
+    
+    # Очищаем состояние
+    state.clear_creating_event(user.id)
+    state.clear_event_data(user.id)
+    
+    # Получаем данные
+    title = data.get("title", "")
+    dt_str = data.get("datetime", "")
+    location = data.get("location")
+    notes = data.get("notes")
+    
+    if not title or not dt_str:
+        await message.answer("❌ Ошибка: недостаточно данных")
+        return
+    
+    dt = datetime.fromisoformat(dt_str)
+    
+    # Создаём событие
+    user_id = await repo.ensure_user(user.id, user.username, user.full_name)
+    event = await repo.create_event(
+        owner_id=user_id,
+        title=title,
+        starts_at=dt,
+        location=location,
+        notes=notes,
+    )
+    
+    # Показываем успешное создание
+    event_text = (
+        f"✅ <b>Событие #{event['id']} создано!</b>\n\n"
+        f"📝 <b>Название:</b> {title}\n"
+        f"📅 <b>Дата:</b> {dt.strftime('%d.%m.%Y %H:%M')} МСК\n"
+    )
+    if location:
+        event_text += f"📍 <b>Место:</b> {location}\n"
+    if notes:
+        event_text += f"📋 <b>Заметки:</b> {notes}\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ Управление событием", callback_data=f"owner:{event['id']}")],
+        [InlineKeyboardButton(text="📅 Мои события", callback_data="menu:myevents")],
+        [InlineKeyboardButton(text="◀️ В меню", callback_data="menu:main")]
+    ])
+    
+    await message.answer(event_text, reply_markup=keyboard)
+
+
+@events_router.message(F.text & ~F.text.startswith("/"))
+async def handle_text_input(message: Message) -> None:
+    """Обработка текстового ввода для создания события или редактирования"""
     user = message.from_user
     if not user:
         return
-
+    
+    repo = get_repo()
+    
+    # Проверяем, создаёт ли пользователь событие
+    if state.is_creating_event(user.id):
+        await handle_create_event_input(message, repo, user)
+        return
+    
+    # Проверяем pending edit
     pending = state.pop_pending_edit(user.id)
     if not pending:
         return
 
     event_id, field = pending
-    repo = get_repo()
     user_id = await repo.ensure_user(user.id, user.username, user.full_name)
     await assert_event_owner(repo.db, user_id, event_id)
 

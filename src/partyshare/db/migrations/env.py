@@ -22,7 +22,7 @@ def _sync_database_url() -> str:
     url = make_url(get_settings().database_url)
     if "+asyncpg" in url.drivername:
         url = url.set(drivername=url.drivername.replace("+asyncpg", ""))
-    return str(url)
+    return url.render_as_string(hide_password=False)
 
 
 def run_migrations_offline() -> None:

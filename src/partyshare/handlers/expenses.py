@@ -27,7 +27,7 @@ async def cmd_addexpense(message: Message) -> None:
         return
     parts = [part.strip() for part in message.text.replace("/addexpense", "", 1).split("|")]
     if len(parts) < 3:
-        await message.answer("Использование: /addexpense <event_id> | <title> | <amount> <CUR> | shared|items")
+        await message.answer("Использование: /addexpense [event_id] | [название] | [сумма] [валюта] | shared|items")
         return
 
     try:
@@ -86,7 +86,7 @@ async def cmd_additem(message: Message) -> None:
         return
     parts = [part.strip() for part in message.text.replace("/additem", "", 1).split("|")]
     if len(parts) < 3:
-        await message.answer("Использование: /additem <expense_id> | <label> | <amount> | @u1 @u2 ...")
+        await message.answer("Использование: /additem [expense_id] | [название] | [сумма] | @u1 @u2 ...")
         return
 
     try:
