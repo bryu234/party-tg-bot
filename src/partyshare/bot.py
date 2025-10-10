@@ -8,6 +8,7 @@ from aiogram.enums import ParseMode
 from partyshare.config import get_settings
 from partyshare.db.repo import Database, PartyShareRepository, set_global_repository
 from partyshare.handlers import basic_router, events_router, expenses_router
+from partyshare.handlers.inline import inline_router
 from partyshare.state import state
 from partyshare.logging import configure_logging, get_logger
 from partyshare.scheduler import setup_scheduler
@@ -28,6 +29,7 @@ async def main() -> None:
     dp.include_router(basic_router)
     dp.include_router(events_router)
     dp.include_router(expenses_router)
+    dp.include_router(inline_router)
 
     set_global_repository(repo)
 

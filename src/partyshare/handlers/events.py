@@ -70,26 +70,234 @@ async def cb_menu_myevents(callback: CallbackQuery) -> None:
         )
     else:
         settings = get_settings()
-        cards = build_event_cards(events, settings.zoneinfo, is_owner=True)
-        keyboard = build_events_keyboard(
-            events,
-            cards,
-            is_owner_view=True,
-            page_size=5,
-            page=0
-        )
+        
+        # Формируем текст со списком событий
+        text = "📅 <b>Мои события</b>\n\n"
+        
+        # Создаем клавиатуру с кнопками для каждого события
+        buttons = []
+        for i, event in enumerate(events, 1):
+            # Форматируем дату
+            local_dt = event['starts_at'].astimezone(settings.zoneinfo)
+            date_str = local_dt.strftime("%d.%m %H:%M")
+            
+            # Формируем текст кнопки
+            event_text = f"{event['title']} ({date_str})"
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{i}. {event_text[:40]}", 
+                    callback_data=f"owner:{event['id']}"
+                )
+            ])
         
         # Добавляем кнопку возврата в меню
-        keyboard.inline_keyboard.append(
-            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
-        )
+        buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         
         await callback.message.edit_text(
-            "📅 <b>Мои события</b>\n\n"
-            "Выбери событие для управления:",
+            text + "Выбери событие для управления:",
             reply_markup=keyboard
         )
     
+    await callback.answer()
+
+
+@events_router.callback_query(lambda c: c.data and c.data.startswith("owner:"))
+async def cb_owner_event(callback: CallbackQuery) -> None:
+    """Меню управления событием для владельца"""
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+    
+    # Извлекаем event_id из callback data
+    event_id_str = callback.data.split(":", 1)[1]
+    try:
+        event_id = int(event_id_str)
+    except ValueError:
+        await callback.answer("Неверный ID события")
+        return
+    
+    # Получаем информацию о событии
+    repo = get_repo()
+    event = await repo.get_event(event_id)
+    
+    if not event:
+        await callback.answer("Событие не найдено")
+        return
+    
+    # Получаем user_id из базы
+    repo_user_id = await repo.ensure_user(user.id, user.username, user.full_name)
+    
+    # Проверяем, что пользователь - владелец события
+    if event['owner_id'] != repo_user_id:
+        await callback.answer("У вас нет прав для управления этим событием")
+        return
+    
+    # Форматируем информацию о событии
+    settings = get_settings()
+    local_dt = event['starts_at'].astimezone(settings.zoneinfo)
+    date_str = local_dt.strftime("%d.%m.%Y %H:%M")
+    
+    text = (
+        f"🎉 <b>{event['title']}</b>\n\n"
+        f"📅 <b>Дата:</b> {date_str}\n"
+    )
+    
+    if event.get('location'):
+        text += f"📍 <b>Место:</b> {event['location']}\n"
+    
+    if event.get('notes'):
+        text += f"\n📋 <b>Заметки:</b>\n{event['notes']}\n"
+    
+    # Получаем список участников
+    participants = await repo.get_event_participants(event_id)
+    text += f"\n👥 <b>Участников:</b> {len(participants)}\n"
+    
+    # Создаем клавиатуру с действиями
+    buttons = [
+        [InlineKeyboardButton(text="👥 Список участников", callback_data=f"event_participants:{event_id}")],
+        [InlineKeyboardButton(text="✉️ Поделиться приглашением", switch_inline_query=f"invite_{event_id}")],
+        [InlineKeyboardButton(text="💰 Расходы", callback_data=f"event_expenses:{event_id}")],
+        [InlineKeyboardButton(text="🧮 Расчёты", callback_data=f"event_settlement:{event_id}")],
+        [InlineKeyboardButton(text="◀️ К списку событий", callback_data="menu:myevents")]
+    ]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@events_router.callback_query(lambda c: c.data and c.data.startswith("event_participants:"))
+async def cb_event_participants(callback: CallbackQuery) -> None:
+    """Показать список участников события"""
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+    
+    event_id_str = callback.data.split(":", 1)[1]
+    try:
+        event_id = int(event_id_str)
+    except ValueError:
+        await callback.answer("Неверный ID события")
+        return
+    
+    repo = get_repo()
+    event = await repo.get_event(event_id)
+    
+    if not event:
+        await callback.answer("Событие не найдено")
+        return
+    
+    # Получаем участников
+    participants = await repo.get_event_participants(event_id)
+    
+    text = f"👥 <b>Участники события \"{event['title']}\"</b>\n\n"
+    
+    if not participants:
+        text += "Пока нет участников.\n"
+    else:
+        for i, p in enumerate(participants, 1):
+            # p - это asyncpg.Record с полями user_id, full_name, username, status
+            status_emoji = "✅" if p.get('status') == 'accepted' else "⏳"
+            name = p.get('full_name', 'Unknown')
+            username = f" (@{p['username']})" if p.get('username') else ""
+            text += f"{i}. {status_emoji} {name}{username}\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад к событию", callback_data=f"owner:{event_id}")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@events_router.callback_query(lambda c: c.data and c.data.startswith("event_expenses:"))
+async def cb_event_expenses(callback: CallbackQuery) -> None:
+    """Показать расходы события"""
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+    
+    event_id_str = callback.data.split(":", 1)[1]
+    try:
+        event_id = int(event_id_str)
+    except ValueError:
+        await callback.answer("Неверный ID события")
+        return
+    
+    repo = get_repo()
+    event = await repo.get_event(event_id)
+    
+    if not event:
+        await callback.answer("Событие не найдено")
+        return
+    
+    expenses = await repo.get_event_expenses(event_id)
+    
+    text = f"💰 <b>Расходы события \"{event['title']}\"</b>\n\n"
+    
+    if not expenses:
+        text += "Пока нет расходов.\n\n"
+        text += "Добавь расход командой:\n"
+        text += f"<code>/addexpense {event_id} | Название | Сумма | shared</code>"
+    else:
+        total = 0
+        for i, exp in enumerate(expenses, 1):
+            amount = exp.get('amount', 0)
+            currency = exp.get('currency', 'RUB')
+            description = exp.get('description', 'Без описания')
+            text += f"{i}. {description}: {amount} {currency}\n"
+            if currency == 'RUB':
+                total += amount
+        
+        if total > 0:
+            text += f"\n<b>Итого:</b> {total} RUB"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад к событию", callback_data=f"owner:{event_id}")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@events_router.callback_query(lambda c: c.data and c.data.startswith("event_settlement:"))
+async def cb_event_settlement(callback: CallbackQuery) -> None:
+    """Показать расчёты по событию"""
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+    
+    event_id_str = callback.data.split(":", 1)[1]
+    try:
+        event_id = int(event_id_str)
+    except ValueError:
+        await callback.answer("Неверный ID события")
+        return
+    
+    repo = get_repo()
+    event = await repo.get_event(event_id)
+    
+    if not event:
+        await callback.answer("Событие не найдено")
+        return
+    
+    text = f"🧮 <b>Расчёты по событию \"{event['title']}\"</b>\n\n"
+    text += "Функция расчётов в разработке...\n\n"
+    text += "Скоро здесь будет:\n"
+    text += "• Кто сколько должен\n"
+    text += "• Оптимальные переводы\n"
+    text += "• Итоговая статистика"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад к событию", callback_data=f"owner:{event_id}")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
 

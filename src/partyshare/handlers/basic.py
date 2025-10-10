@@ -4,6 +4,9 @@ from aiogram import Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
+from partyshare.db.repo import get_global_repository
+from partyshare.config import get_settings
+
 basic_router = Router()
 
 
@@ -23,10 +26,98 @@ async def cmd_start(message: Message) -> None:
     # Очищаем все состояния пользователя
     from partyshare.state import state
     user = message.from_user
-    if user:
-        state.clear_user(user.id)
+    if not user:
+        return
     
-    user_name = user.first_name if user else "друг"
+    state.clear_user(user.id)
+    user_name = user.first_name
+    
+    # Проверяем, есть ли параметр deep link (приглашение)
+    if message.text and len(message.text.split()) > 1:
+        param = message.text.split()[1]
+        
+        # Обработка приглашения
+        if param.startswith("invite_"):
+            token = param[7:]  # Убираем "invite_"
+            repo = get_global_repository()
+            
+            # Получаем приглашение по токену
+            invite = await repo.get_invite_link_by_token(token)
+            
+            if not invite:
+                await message.answer(
+                    "❌ Приглашение не найдено или устарело.\n\n"
+                    "Попроси друга отправить новую ссылку!",
+                    reply_markup=get_main_menu_keyboard()
+                )
+                return
+            
+            # Получаем событие
+            event = await repo.get_event(invite['event_id'])
+            
+            if not event:
+                await message.answer(
+                    "❌ Событие не найдено.\n\n"
+                    "Возможно, оно было удалено.",
+                    reply_markup=get_main_menu_keyboard()
+                )
+                return
+            
+            # Регистрируем пользователя в базе
+            repo_user_id = await repo.ensure_user(user.id, user.username, user.full_name)
+            
+            # Проверяем, не является ли пользователь уже участником
+            participants = await repo.get_event_participants(invite['event_id'])
+            already_participant = any(p['user_id'] == repo_user_id for p in participants)
+            
+            if already_participant:
+                settings = get_settings()
+                local_dt = event['starts_at'].astimezone(settings.zoneinfo)
+                date_str = local_dt.strftime("%d.%m.%Y в %H:%M")
+                
+                await message.answer(
+                    f"✅ Ты уже участник события!\n\n"
+                    f"🎉 <b>{event['title']}</b>\n"
+                    f"📅 {date_str}\n\n"
+                    "Используй меню ниже для управления событиями:",
+                    reply_markup=get_main_menu_keyboard()
+                )
+                return
+            
+            # Добавляем участника
+            await repo.set_participant_status(
+                event_id=invite['event_id'],
+                user_id=repo_user_id,
+                status='going'
+            )
+            
+            # Увеличиваем счётчик использований
+            await repo.increment_invite_use(invite['id'])
+            
+            # Форматируем дату
+            settings = get_settings()
+            local_dt = event['starts_at'].astimezone(settings.zoneinfo)
+            date_str = local_dt.strftime("%d.%m.%Y в %H:%M")
+            
+            success_text = (
+                f"🎉 <b>Поздравляем!</b>\n\n"
+                f"Ты присоединился к событию:\n\n"
+                f"<b>{event['title']}</b>\n"
+                f"📅 {date_str}\n"
+            )
+            
+            if event.get('location'):
+                success_text += f"📍 {event['location']}\n"
+            
+            if event.get('notes'):
+                success_text += f"\n📋 {event['notes']}\n"
+            
+            success_text += "\n👇 Используй меню для управления событиями:"
+            
+            await message.answer(success_text, reply_markup=get_main_menu_keyboard())
+            return
+    
+    # Обычный /start без параметров
     await message.answer(
         f"👋 Привет, {user_name}!\n\n"
         "Я <b>PartyShare</b> — помогу собрать друзей и честно поделить расходы.\n\n"
